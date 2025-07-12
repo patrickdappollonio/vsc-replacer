@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -28,18 +27,16 @@ func lineDiff(original, replaced []string, filename string) []string {
 	return diffLines
 }
 
-var rootCmd = &cobra.Command{
-	Use:   "vsc-replacer",
-	Short: "A tool to replace regex matches in files",
-	Run: func(cmd *cobra.Command, args []string) {
+var grepCmd = &cobra.Command{
+	Use:   "grep",
+	Short: "Search for regex matches in files without replacing them",
+	RunE: func(cmd *cobra.Command, args []string) error {
 		regexInput, _ := cmd.Flags().GetString("regex")
-		replacement, _ := cmd.Flags().GetString("replacement")
 		dir, _ := cmd.Flags().GetString("dir")
-		dryRun, _ := cmd.Flags().GetBool("dry-run")
 
 		regex, err := regexp.Compile(regexInput)
 		if err != nil {
-			log.Fatalf("Failed to compile regular expression: %v", err)
+			return fmt.Errorf("failed to compile regular expression: %w", err)
 		}
 
 		err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
@@ -49,7 +46,54 @@ var rootCmd = &cobra.Command{
 
 			// Process only regular files (not directories)
 			if !info.IsDir() {
-				content, err := ioutil.ReadFile(path)
+				content, err := os.ReadFile(path)
+				if err != nil {
+					return fmt.Errorf("failed to read file %s: %w", path, err)
+				}
+
+				scanner := bufio.NewScanner(strings.NewReader(string(content)))
+				lineNum := 0
+				for scanner.Scan() {
+					lineNum++
+					line := scanner.Text()
+					if regex.MatchString(line) {
+						fmt.Printf("%s:%d:%s\n", path, lineNum, line)
+					}
+				}
+			}
+
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+
+		return nil
+	},
+}
+
+var rootCmd = &cobra.Command{
+	Use:   "vsc-replacer",
+	Short: "A tool to replace regex matches in files",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		regexInput, _ := cmd.Flags().GetString("regex")
+		replacement, _ := cmd.Flags().GetString("replacement")
+		dir, _ := cmd.Flags().GetString("dir")
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
+
+		regex, err := regexp.Compile(regexInput)
+		if err != nil {
+			return fmt.Errorf("failed to compile regular expression: %w", err)
+		}
+
+		err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+
+			// Process only regular files (not directories)
+			if !info.IsDir() {
+				content, err := os.ReadFile(path)
 				if err != nil {
 					return fmt.Errorf("failed to read file %s: %w", path, err)
 				}
@@ -74,7 +118,7 @@ var rootCmd = &cobra.Command{
 						fmt.Println(strings.Repeat("-", 3))
 					}
 				} else {
-					err = ioutil.WriteFile(path, []byte(replaced), info.Mode())
+					err = os.WriteFile(path, []byte(replaced), info.Mode())
 					if err != nil {
 						return fmt.Errorf("failed to write to file %s: %w", path, err)
 					}
@@ -83,14 +127,16 @@ var rootCmd = &cobra.Command{
 
 			return nil
 		})
-
 		if err != nil {
-			log.Fatal(err)
+			return err
 		}
+
+		return nil
 	},
 }
 
 func main() {
+	// Add flags to the root command
 	rootCmd.PersistentFlags().String("regex", "", "Regular expression with capture groups")
 	rootCmd.PersistentFlags().String("replacement", "", "Replacement string")
 	rootCmd.PersistentFlags().String("dir", "", "Directory with files")
@@ -98,6 +144,17 @@ func main() {
 	rootCmd.MarkPersistentFlagRequired("regex")
 	rootCmd.MarkPersistentFlagRequired("replacement")
 	rootCmd.MarkPersistentFlagRequired("dir")
+
+	// Add flags to the grep command (same as root but replacement is optional)
+	grepCmd.Flags().String("regex", "", "Regular expression with capture groups")
+	grepCmd.Flags().String("replacement", "", "Replacement string (ignored in grep mode)")
+	grepCmd.Flags().String("dir", "", "Directory with files")
+	grepCmd.Flags().Bool("dry-run", false, "Dry run mode (ignored in grep mode)")
+	grepCmd.MarkFlagRequired("regex")
+	grepCmd.MarkFlagRequired("dir")
+
+	// Add the grep subcommand to the root command
+	rootCmd.AddCommand(grepCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		log.Fatal(err)
